@@ -40,13 +40,16 @@ class QdrantInstrumentor(BaseInstrumentor):
     """An instrumentor for Qdrant's client library."""
 
     def __init__(self, exception_logger=None):
+        """Initialize instrumentation and configure its optional exception logger."""
         super().__init__()
         Config.exception_logger = exception_logger
 
     def instrumentation_dependencies(self) -> Collection[str]:
+        """Return the supported Qdrant client dependency specification."""
         return _instruments
 
     def _instrument(self, **kwargs):
+        """Select sync or async tracing wrappers for available client methods."""
         tracer_provider = kwargs.get("tracer_provider")
         tracer = get_tracer(__name__, __version__, tracer_provider)
         for wrapped_method in WRAPPED_METHODS:
@@ -62,6 +65,7 @@ class QdrantInstrumentor(BaseInstrumentor):
                 )
 
     def _uninstrument(self, **kwargs):
+        """Restore the original configured methods on both client classes."""
         for wrapped_method in WRAPPED_METHODS:
             wrap_object = wrapped_method.get("object")
             wrap_method = wrapped_method.get("method")

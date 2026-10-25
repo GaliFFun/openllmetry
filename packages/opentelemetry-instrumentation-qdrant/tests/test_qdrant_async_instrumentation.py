@@ -20,6 +20,7 @@ METHODS = ["upsert", "search", "search_batch"]
 
 @asynccontextmanager
 async def _client(**kwargs):
+    """Yield an async client and close it even when the test raises or cancels."""
     client = AsyncQdrantClient(**kwargs)
     try:
         yield client
@@ -28,6 +29,7 @@ async def _client(**kwargs):
 
 
 def _call(client, method):
+    """Create a representative Qdrant operation without awaiting it."""
     if method == "upsert":
         return client.upsert(collection_name=COLLECTION_NAME, points=POINTS)
     if method == "search":
@@ -39,6 +41,7 @@ def _call(client, method):
 
 
 def _response(method):
+    """Build a successful HTTP response with the result shape for the method."""
     if method == "upsert":
         result = {"operation_id": 1, "status": "completed"}
     else:
@@ -49,17 +52,21 @@ def _response(method):
 
 
 def _spans(exporter, method):
+    """Return finished Qdrant spans for the requested client method."""
     return [span for span in exporter.get_finished_spans() if span.name == f"qdrant.{method}"]
 
 
 @pytest.mark.parametrize("method", METHODS)
 def test_async_span_covers_await_and_preserves_parent(exporter, method):
+    """Keep the Qdrant span current and open throughout the awaited request."""
     async def run():
+        """Coordinate a pending request and verify its span hierarchy and result."""
         entered, release = asyncio.Event(), asyncio.Event()
         tracer = trace.get_tracer(__name__)
         active_spans = []
 
         async def handler(request):
+            """Hold a child transport span open until the test releases the request."""
             active_spans.append(trace.get_current_span())
             with tracer.start_as_current_span("transport"):
                 entered.set()
@@ -118,8 +125,11 @@ def test_async_span_covers_await_and_preserves_parent(exporter, method):
 
 @pytest.mark.parametrize("method", METHODS)
 def test_async_exception_is_recorded_and_propagated(exporter, method):
+    """Propagate awaited request errors and record exactly one exception event."""
     async def run():
+        """Exercise a failed request and inspect its completed Qdrant span."""
         async def handler(request):
+            """Return an HTTP error after yielding control to the event loop."""
             await asyncio.sleep(0)
             return httpx.Response(500, json={"status": {"error": "test failure"}})
 
@@ -139,13 +149,16 @@ def test_async_exception_is_recorded_and_propagated(exporter, method):
 
 
 def test_async_cancellation_closes_span_and_restores_context(exporter):
+    """End cancelled operation spans and restore the caller's tracing context."""
     async def run():
+        """Cancel a pending operation and verify span and context cleanup."""
         entered = asyncio.Event()
         operation_spans = []
         restored_contexts = []
         tracer = trace.get_tracer(__name__)
 
         async def handler(request):
+            """Capture the active operation span and block until cancellation."""
             operation_spans.append(trace.get_current_span())
             entered.set()
             await asyncio.Event().wait()
@@ -155,6 +168,7 @@ def test_async_cancellation_closes_span_and_restores_context(exporter):
         ) as client:
             with tracer.start_as_current_span("caller") as caller:
                 async def operation():
+                    """Capture the restored context while cancellation unwinds the call."""
                     try:
                         await _call(client, "upsert")
                     finally:
@@ -180,10 +194,13 @@ def test_async_cancellation_closes_span_and_restores_context(exporter):
 
 @pytest.mark.parametrize("method", METHODS)
 def test_suppressed_async_call_is_awaited_without_a_span(exporter, method):
+    """Await suppressed client calls normally without exporting Qdrant spans."""
     async def run():
+        """Run a suppressed request and verify its execution and resolved result."""
         requests = []
 
         async def handler(request):
+            """Track request execution independently of instrumentation suppression."""
             requests.append(request)
             return _response(method)
 
@@ -203,7 +220,9 @@ def test_suppressed_async_call_is_awaited_without_a_span(exporter, method):
 
 
 def test_unawaited_async_call_does_not_create_a_span(exporter):
+    """Avoid exporting spans for coroutine objects that never execute."""
     async def run():
+        """Close an unawaited operation and verify that no span was created."""
         async with _client(location=":memory:") as client:
             pending = _call(client, "upsert")
             pending.close()
@@ -213,8 +232,11 @@ def test_unawaited_async_call_does_not_create_a_span(exporter):
 
 
 def test_async_empty_result_is_preserved(exporter):
+    """Preserve empty results and the existing UNSET status for falsey results."""
     async def run():
+        """Await an empty search response and inspect its span status."""
         async def handler(request):
+            """Return a valid search response containing no matches."""
             return httpx.Response(200, json={"result": [], "status": "ok", "time": 0.0})
 
         async with _client(
@@ -230,7 +252,9 @@ def test_async_empty_result_is_preserved(exporter):
 
 @pytest.mark.parametrize("method", ["upload_points", "upload_records", "upload_collection"])
 def test_async_client_sync_upload_methods_remain_sync(exporter, method):
+    """Keep synchronous upload methods synchronous on the async client."""
     async def run():
+        """Upload to an in-memory collection and verify immediate completion."""
         async with _client(location=":memory:") as client:
             await client.create_collection(
                 COLLECTION_NAME, vectors_config=models.VectorParams(size=2, distance=models.Distance.COSINE)
@@ -251,6 +275,7 @@ def test_async_client_sync_upload_methods_remain_sync(exporter, method):
 
 
 def test_uninstrument_restores_sync_and_async_methods(exporter):
+    """Restore original methods for both coroutine and synchronous wrappers."""
     originals = {
         (client, method): getattr(client, method).__wrapped__
         for client, method in [
