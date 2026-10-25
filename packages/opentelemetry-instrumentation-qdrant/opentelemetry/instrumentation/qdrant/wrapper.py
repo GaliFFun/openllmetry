@@ -42,38 +42,55 @@ def _wrap(tracer, to_wrap, wrapped, instance, args, kwargs):
             SpanAttributes.VECTOR_DB_VENDOR: "Qdrant",
         },
     ) as span:
-        _set_collection_name_attribute(
-            span, method, args, kwargs
-        )  # Set the collection name attribute for all traced methods
-
-        # Begin setting addional attributes for specific methods
-        if method == "upsert":
-            _set_upsert_attributes(span, args, kwargs)
-        elif method == "add":
-            _set_upload_attributes(span, args, kwargs, method, "documents")
-        elif method == "upload_points":
-            _set_upload_attributes(span, args, kwargs, method, "points")
-        elif method == "upload_records":
-            _set_upload_attributes(span, args, kwargs, method, "records")
-        elif method == "upload_collection":
-            _set_upload_attributes(span, args, kwargs, method, "vectors")
-        elif method in [
-            "search",
-            "search_groups",
-            "query",
-            "query_points",
-            "discover",
-            "recommend",
-            "recommend_groups",
-        ]:
-            _set_search_attributes(span, args, kwargs)
-        elif method in ["search_batch", "query_batch_points", "recommend_batch", "discover_batch"]:
-            _set_batch_search_attributes(span, args, kwargs, method)
-
+        _set_request_attributes(span, method, args, kwargs)
         response = wrapped(*args, **kwargs)
         if response:
             span.set_status(Status(StatusCode.OK))
     return response
+
+
+@_with_tracer_wrapper
+async def _awrap(tracer, to_wrap, wrapped, instance, args, kwargs):
+    """Instrument an async call until its result is available."""
+    if context_api.get_value(_SUPPRESS_INSTRUMENTATION_KEY):
+        return await wrapped(*args, **kwargs)
+
+    with tracer.start_as_current_span(
+        to_wrap.get("span_name"),
+        kind=SpanKind.CLIENT,
+        attributes={SpanAttributes.VECTOR_DB_VENDOR: "Qdrant"},
+    ) as span:
+        _set_request_attributes(span, to_wrap.get("method"), args, kwargs)
+        response = await wrapped(*args, **kwargs)
+        if response:
+            span.set_status(Status(StatusCode.OK))
+    return response
+
+
+def _set_request_attributes(span, method, args, kwargs):
+    _set_collection_name_attribute(span, method, args, kwargs)
+    if method == "upsert":
+        _set_upsert_attributes(span, args, kwargs)
+    elif method == "add":
+        _set_upload_attributes(span, args, kwargs, method, "documents")
+    elif method == "upload_points":
+        _set_upload_attributes(span, args, kwargs, method, "points")
+    elif method == "upload_records":
+        _set_upload_attributes(span, args, kwargs, method, "records")
+    elif method == "upload_collection":
+        _set_upload_attributes(span, args, kwargs, method, "vectors")
+    elif method in [
+        "search",
+        "search_groups",
+        "query",
+        "query_points",
+        "discover",
+        "recommend",
+        "recommend_groups",
+    ]:
+        _set_search_attributes(span, args, kwargs)
+    elif method in ["search_batch", "query_batch_points", "recommend_batch", "discover_batch"]:
+        _set_batch_search_attributes(span, args, kwargs, method)
 
 
 @dont_throw

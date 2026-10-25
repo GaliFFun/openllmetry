@@ -1,10 +1,11 @@
 """OpenTelemetry Qdrant instrumentation"""
 
 import json
+import inspect
 import logging
 from pathlib import Path
 from opentelemetry.instrumentation.qdrant.config import Config
-from opentelemetry.instrumentation.qdrant.wrapper import _wrap
+from opentelemetry.instrumentation.qdrant.wrapper import _awrap, _wrap
 import qdrant_client
 from typing import Collection
 from wrapt import wrap_function_wrapper
@@ -53,10 +54,11 @@ class QdrantInstrumentor(BaseInstrumentor):
             wrap_method = wrapped_method.get("method")
             obj = getattr(qdrant_client, wrap_object, None)
             if obj and hasattr(obj, wrap_method):
+                wrapper = _awrap if inspect.iscoroutinefunction(getattr(obj, wrap_method)) else _wrap
                 wrap_function_wrapper(
                     MODULE,
                     f"{wrap_object}.{wrap_method}",
-                    _wrap(tracer, wrapped_method),
+                    wrapper(tracer, wrapped_method),
                 )
 
     def _uninstrument(self, **kwargs):
